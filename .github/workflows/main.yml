@@ -1,8 +1,3 @@
-# ==============================================================================
-# GitHub Actions CI/CD Workflow - Data Pipeline CI
-# Automates: Infrastructure Provisioning -> Data Ingestion -> ETL Execution -> Output Verification
-# ==============================================================================
-
 name: Data Pipeline CI
 
 on:
@@ -13,7 +8,6 @@ on:
 
 jobs:
   build-and-test:
-    name: Build, Deploy & Verify Data Pipeline
     runs-on: ubuntu-latest
 
     services:
@@ -32,12 +26,7 @@ jobs:
         uses: hashicorp/setup-terraform@v2
 
       - name: Wait for LocalStack
-        run: |
-          echo "Waiting for LocalStack S3 to be ready..."
-          until curl -s http://localhost:4566/_localstack/health | grep -q 's3'; do
-            sleep 2
-          done
-          echo "LocalStack is ready!"
+        run: sleep 10
 
       - name: Terraform Init and Apply
         working-directory: ./infrastructure
@@ -65,8 +54,6 @@ jobs:
           docker run --network host \
             -e AWS_ENDPOINT_URL=http://localhost:4566 \
             -e S3_BUCKET_NAME=test-ci-bucket \
-            -e RAW_DATA_KEY=raw/input.csv \
-            -e PROCESSED_DATA_KEY=processed/output.csv \
             -e AWS_ACCESS_KEY_ID=test \
             -e AWS_SECRET_ACCESS_KEY=test \
             -e AWS_DEFAULT_REGION=us-east-1 \
