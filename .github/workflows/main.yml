@@ -1,3 +1,8 @@
+# ==============================================================================
+# GitHub Actions CI/CD Workflow - Data Pipeline CI
+# Automates: Infrastructure Provisioning -> Data Ingestion -> ETL Execution -> Output Verification
+# ==============================================================================
+
 name: Data Pipeline CI
 
 on:
@@ -8,35 +13,42 @@ on:
 
 jobs:
   build-and-test:
+    name: Build, Deploy & Verify Data Pipeline
     runs-on: ubuntu-latest
 
-    services:
-      localstack:
-        image: localstack/localstack:latest
-        ports:
-          - 4566:4566
-        env:
-          SERVICES: s3
-
     steps:
+      # Step 1: Check out the repository
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # Step 2: Set up Terraform CLI
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
 
-      - name: Wait for LocalStack
-        run: sleep 10
+      # Step 3: Start LocalStack Container with Docker socket
+      - name: Start LocalStack
+        run: |
+          docker run -d --name localstack \
+            -p 4566:4566 \
+            -e SERVICES=s3 \
+            -e AWS_DEFAULT_REGION=us-east-1 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            localstack/localstack:latest
+          echo "Waiting for LocalStack to initialize..."
+          sleep 12
 
+      # Step 4: Provision Infrastructure with Terraform
       - name: Terraform Init and Apply
         working-directory: ./infrastructure
         env:
           TF_VAR_s3_bucket_name: test-ci-bucket
           TF_VAR_aws_region: us-east-1
+          TF_VAR_localstack_endpoint: http://localhost:4566
         run: |
           terraform init
           terraform apply -auto-approve
 
+      # Step 5: Seed Raw Input Data into S3
       - name: Seed Raw Data
         env:
           AWS_ACCESS_KEY_ID: test
@@ -48,17 +60,21 @@ jobs:
           echo "2,200" >> input.csv
           aws --endpoint-url=http://localhost:4566 s3 cp input.csv s3://test-ci-bucket/raw/input.csv
 
+      # Step 6: Build and Execute Containerized ETL Application
       - name: Build and Run ETL
         run: |
           docker build -t etl-app .
           docker run --network host \
             -e AWS_ENDPOINT_URL=http://localhost:4566 \
             -e S3_BUCKET_NAME=test-ci-bucket \
+            -e RAW_DATA_KEY=raw/input.csv \
+            -e PROCESSED_DATA_KEY=processed/output.csv \
             -e AWS_ACCESS_KEY_ID=test \
             -e AWS_SECRET_ACCESS_KEY=test \
             -e AWS_DEFAULT_REGION=us-east-1 \
             etl-app
 
+      # Step 7: Verify Processed Output in S3
       - name: Verify Output
         env:
           AWS_ACCESS_KEY_ID: test
