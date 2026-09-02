@@ -1,0 +1,48 @@
+# ==============================================================================
+# Docker Compose Configuration - LocalStack & ETL Pipeline
+# Orchestrates local AWS emulation alongside the containerized ETL application
+# ==============================================================================
+
+version: '3.8'
+
+services:
+  # LocalStack Cloud Emulator Service
+  localstack:
+    image: localstack/localstack:latest
+    container_name: localstack_emulator
+    ports:
+      - "4566:4566"            # Edge Port for all AWS APIs (S3, etc.)
+      - "4510-4559:4510-4559"  # External service port range
+    environment:
+      - SERVICES=s3
+      - AWS_DEFAULT_REGION=us-east-1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - DEBUG=0
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - pipeline-net
+
+  # Containerized Python ETL Application
+  etl-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: etl_data_pipeline
+    depends_on:
+      - localstack
+    environment:
+      # In Docker network, 'localstack' resolves to the LocalStack container's internal IP
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - S3_BUCKET_NAME=my-pipeline-bucket
+      - RAW_DATA_KEY=raw/input.csv
+      - PROCESSED_DATA_KEY=processed/output.csv
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=us-east-1
+    networks:
+      - pipeline-net
+
+networks:
+  pipeline-net:
+    driver: bridge

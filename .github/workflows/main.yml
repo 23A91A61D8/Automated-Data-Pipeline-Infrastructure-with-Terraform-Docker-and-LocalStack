@@ -1,0 +1,144 @@
+# ==============================================================================
+# GitHub Actions CI/CD Workflow - Data Pipeline CI (main.yml)
+# Automates: Infrastructure Provisioning -> Data Ingestion -> ETL Execution -> Output Verification
+# ==============================================================================
+
+name: Data Pipeline CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-and-test:
+    name: Build, Deploy & Verify Data Pipeline
+    runs-on: ubuntu-latest
+
+    # LocalStack service container running alongside the workflow runner
+    services:
+      localstack:
+        image: localstack/localstack:latest
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3
+          AWS_DEFAULT_REGION: us-east-1
+        options: >-
+          --health-cmd="curl -s http://localhost:4566/_localstack/health | grep -q '\"s3\": \"running\"' || curl -s http://localhost:4566/_localstack/health | grep -q '\"s3\": \"available\"' || exit 0"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      # Step 1: Check out the repository source code
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Python 3.10 environment
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      # Step 3: Set up Terraform CLI
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.7"
+
+      # Step 4: Ensure LocalStack Edge Port is Ready
+      - name: Wait for LocalStack Readiness
+        run: |
+          echo "Waiting for LocalStack S3 service to respond at http://localhost:4566..."
+          for i in {1..30}; do
+            if curl -s http://localhost:4566/_localstack/health | grep -q 's3'; then
+              echo "LocalStack is up and healthy!"
+              break
+            fi
+            echo "LocalStack not ready yet (attempt $i/30), sleeping 2s..."
+            sleep 2
+          done
+
+      # Step 5: Validate Infrastructure Code Format & Syntax
+      - name: Terraform Format & Validate
+        working-directory: ./infrastructure
+        run: |
+          terraform fmt -check
+          terraform init -backend=false
+          terraform validate
+
+      # Step 6: Provision S3 Bucket in LocalStack via Terraform
+      - name: Terraform Init and Apply
+        working-directory: ./infrastructure
+        env:
+          TF_VAR_s3_bucket_name: test-ci-bucket
+          TF_VAR_aws_region: us-east-1
+          TF_VAR_localstack_endpoint: http://localhost:4566
+        run: |
+          terraform init
+          terraform plan -out=tfplan
+          terraform apply -auto-approve tfplan
+
+      # Step 7: Seed Raw Input Data into S3 via AWS CLI
+      - name: Seed Raw Data
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          echo "Creating raw input CSV dataset..."
+          cat << 'EOF' > input.csv
+          id,value
+          1,100
+          2,200
+          3,350
+          4,500
+          5,50
+          EOF
+
+          echo "Uploading raw dataset to s3://test-ci-bucket/raw/input.csv..."
+          aws --endpoint-url=http://localhost:4566 s3 cp input.csv s3://test-ci-bucket/raw/input.csv
+          aws --endpoint-url=http://localhost:4566 s3 ls s3://test-ci-bucket/raw/
+
+      # Step 8: Build Dockerized ETL Application Image
+      - name: Build Docker Image
+        run: |
+          echo "Building ETL application container image..."
+          docker build -t etl-app .
+
+      # Step 9: Execute ETL Container on Host Network
+      - name: Run ETL Application
+        run: |
+          echo "Executing containerized ETL job against LocalStack..."
+          docker run --network host \
+            -e AWS_ENDPOINT_URL=http://localhost:4566 \
+            -e S3_BUCKET_NAME=test-ci-bucket \
+            -e RAW_DATA_KEY=raw/input.csv \
+            -e PROCESSED_DATA_KEY=processed/output.csv \
+            -e AWS_ACCESS_KEY_ID=test \
+            -e AWS_SECRET_ACCESS_KEY=test \
+            -e AWS_DEFAULT_REGION=us-east-1 \
+            etl-app
+
+      # Step 10: Verify Output Data in S3 via AWS CLI Assertions
+      - name: Verify Output
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          echo "Listing contents of s3://test-ci-bucket/processed/..."
+          aws --endpoint-url=http://localhost:4566 s3 ls s3://test-ci-bucket/processed/
+
+          echo "Verifying processed output object exists..."
+          aws --endpoint-url=http://localhost:4566 s3api head-object --bucket test-ci-bucket --key processed/output.csv
+
+          echo "Downloading and displaying processed output data..."
+          aws --endpoint-url=http://localhost:4566 s3 cp s3://test-ci-bucket/processed/output.csv downloaded_output.csv
+          cat downloaded_output.csv
+
+          echo "Pipeline automated integration test passed successfully!"

@@ -1,0 +1,4 @@
+pandas==2.1.1
+boto3==1.28.62
+s3fs==2023.9.2
+python-dotenv==1.0.0
