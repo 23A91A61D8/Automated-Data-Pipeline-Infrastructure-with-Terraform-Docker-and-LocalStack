@@ -25,7 +25,7 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
 
-      # Step 3: Start LocalStack Container with Docker socket
+      # Step 3: Start LocalStack Container
       - name: Start LocalStack
         run: |
           docker run -d --name localstack \
@@ -34,8 +34,12 @@ jobs:
             -e AWS_DEFAULT_REGION=us-east-1 \
             -v /var/run/docker.sock:/var/run/docker.sock \
             localstack/localstack:latest
-          echo "Waiting for LocalStack to initialize..."
-          sleep 12
+          echo "Waiting for LocalStack S3 to be ready..."
+          until curl -s http://127.0.0.1:4566/_localstack/health | grep -q 's3'; do
+            echo "LocalStack initializing, waiting 2s..."
+            sleep 2
+          done
+          echo "LocalStack S3 is up and responding!"
 
       # Step 4: Provision Infrastructure with Terraform
       - name: Terraform Init and Apply
@@ -43,7 +47,7 @@ jobs:
         env:
           TF_VAR_s3_bucket_name: test-ci-bucket
           TF_VAR_aws_region: us-east-1
-          TF_VAR_localstack_endpoint: http://localhost:4566
+          TF_VAR_localstack_endpoint: http://127.0.0.1:4566
         run: |
           terraform init
           terraform apply -auto-approve
@@ -58,14 +62,14 @@ jobs:
           echo "id,value" > input.csv
           echo "1,100" >> input.csv
           echo "2,200" >> input.csv
-          aws --endpoint-url=http://localhost:4566 s3 cp input.csv s3://test-ci-bucket/raw/input.csv
+          aws --endpoint-url=http://127.0.0.1:4566 s3 cp input.csv s3://test-ci-bucket/raw/input.csv
 
       # Step 6: Build and Execute Containerized ETL Application
       - name: Build and Run ETL
         run: |
           docker build -t etl-app .
           docker run --network host \
-            -e AWS_ENDPOINT_URL=http://localhost:4566 \
+            -e AWS_ENDPOINT_URL=http://127.0.0.1:4566 \
             -e S3_BUCKET_NAME=test-ci-bucket \
             -e RAW_DATA_KEY=raw/input.csv \
             -e PROCESSED_DATA_KEY=processed/output.csv \
@@ -81,5 +85,5 @@ jobs:
           AWS_SECRET_ACCESS_KEY: test
           AWS_DEFAULT_REGION: us-east-1
         run: |
-          aws --endpoint-url=http://localhost:4566 s3 ls s3://test-ci-bucket/processed/
-          aws --endpoint-url=http://localhost:4566 s3api head-object --bucket test-ci-bucket --key processed/output.csv
+          aws --endpoint-url=http://127.0.0.1:4566 s3 ls s3://test-ci-bucket/processed/
+          aws --endpoint-url=http://127.0.0.1:4566 s3api head-object --bucket test-ci-bucket --key processed/output.csv
